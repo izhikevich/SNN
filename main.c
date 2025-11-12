@@ -54,7 +54,7 @@ typedef struct {
 typedef struct {
     int r_min[N_T];
     float u_min[N_T];
-    int j[N_T];      // j = f_i(x)
+    int j[N_T];      // j = H_i(x)
 } LUTcache;
 
 typedef struct {
@@ -515,7 +515,6 @@ void load_snippet(Model* m, TrainingData* training, int char_start) {
 
 int model_inference(Model* m) {
 
-    memset(m->output, 0, CONTEXT_SIZE*VOCAB_SIZE*sizeof(float));
     model_forward(m);
     softmax(m->output[CONTEXT_SIZE-1], VOCAB_SIZE, 0.4f);
     int sampled_index = sample(m->output[CONTEXT_SIZE-1], VOCAB_SIZE);
