@@ -524,7 +524,7 @@ int model_inference(Model* m) {
 void model_prompt_response(Model* m, unsigned char* prompt, int response_length) {
 
     unsigned char prompt_copy[CONTEXT_SIZE+1];
-    memcpy(prompt_copy, prompt, CONTEXT_SIZE+1); // Need to fix: what if the prompt is too short?
+    strlcpy((char *)prompt_copy, (const char *)prompt, CONTEXT_SIZE+1); // Need to fix: what if the prompt is too short?
     printf("%s", prompt_copy);
 
     for (int i = 0; i < response_length; i++) {
