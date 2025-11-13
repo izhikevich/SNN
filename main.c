@@ -521,13 +521,13 @@ int model_inference(Model* m) {
     return sampled_index;
 }
 
-void model_prompt_response(Model* m, unsigned char* prompt, int prompt_length) {
+void model_prompt_response(Model* m, unsigned char* prompt, int response_length) {
 
-    unsigned char prompt_copy[CONTEXT_SIZE];
-    memcpy(prompt_copy, prompt, CONTEXT_SIZE); // Need to fix: what if the prompt is too short?
+    unsigned char prompt_copy[CONTEXT_SIZE+1];
+    memcpy(prompt_copy, prompt, CONTEXT_SIZE+1); // Need to fix: what if the prompt is too short?
     printf("%s", prompt_copy);
 
-    for (int i = 0; i < prompt_length; i++) {
+    for (int i = 0; i < response_length; i++) {
         for (int pos = 0; pos < CONTEXT_SIZE; pos++) {
             embed_token(m, prompt_copy, pos, m->z[pos]);
         }
