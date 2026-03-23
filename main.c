@@ -11,7 +11,17 @@
 #include <string.h>
 #include <fcntl.h>
 #include <unistd.h>
-#include <sys/mman.h>
+//#include <sys/mman.h>
+
+size_t strlcpy(char *dst, const char *src, size_t size) {
+    size_t len = strlen(src);
+    if (size > 0) {
+        size_t n = (len >= size) ? size - 1 : len;
+        memcpy(dst, src, n);
+        dst[n] = '\0';
+    }
+    return len;
+}
 
 #define FILE_NAME "loss.csv"    // saves validation loss values during training
 
@@ -19,7 +29,7 @@
 #define VOCAB_SIZE              256
 #define EMBEDDING_DIM           32
 #define POSITIONAL_DIM          4     
-#define NUM_LAYERS              6
+#define NUM_LAYERS              1
 #define NUM_HEADS               4
 
 #define N_T                     16      
@@ -34,7 +44,7 @@
 
 #define LEARNING_RATE  (MIN( 1 /sqrt(1+t), t/(4000)/sqrt(4000) )) // Adam learning rate scheduler
 float learning_rate;
-#define TESTING_LENGTH 10000
+#define TESTING_LENGTH 1000
 
 
 // ----------------------------------------------------------------------------
@@ -47,6 +57,7 @@ typedef struct {
 
 typedef struct {
     int y_dim;       // dimension of the output y
+    int total_n_c;   // total number of comparisons (for serialization)
     float* S[N_T];   // synaptic values (table_size, y_dim), i.e., (,j,k) in the paper
     Anchors anchors[N_T];    
 } LUT;
@@ -151,6 +162,7 @@ void fill_vector_with_random_intergers_different_from_vector2(int* vector, int* 
 void build_LUT(LUT* lut, int total_n_c, int y_dim) {
 
     lut->y_dim = y_dim;
+    lut->total_n_c = total_n_c;
     for (int i = 0; i < N_T; i++) {
         fill_vector_with_random_intergers(lut->anchors[i].a, N_C, EMBEDDING_DIM);
         fill_vector_with_random_intergers_different_from_vector2(lut->anchors[i].b, lut->anchors[i].a, N_C, EMBEDDING_DIM);
@@ -309,6 +321,87 @@ void free_Model(Model* m) {
         }
     }
     free_LUT(&m->unembedder);
+}
+
+// ----------------------------------------------------------------------------
+// Model save/load (binary checkpoint)
+
+void save_LUT(LUT* lut, FILE* f) {
+    fwrite(&lut->y_dim, sizeof(int), 1, f);
+    fwrite(&lut->total_n_c, sizeof(int), 1, f);
+    for (int i = 0; i < N_T; i++) {
+        fwrite(&lut->anchors[i].a, sizeof(int), N_C, f);
+        fwrite(&lut->anchors[i].b, sizeof(int), N_C, f);
+        int table_size = (1 << lut->total_n_c) * lut->y_dim;
+        fwrite(lut->S[i], sizeof(float), table_size, f);
+    }
+}
+
+void load_LUT(LUT* lut, FILE* f) {
+    fread(&lut->y_dim, sizeof(int), 1, f);
+    fread(&lut->total_n_c, sizeof(int), 1, f);
+    for (int i = 0; i < N_T; i++) {
+        fread(&lut->anchors[i].a, sizeof(int), N_C, f);
+        fread(&lut->anchors[i].b, sizeof(int), N_C, f);
+        int table_size = (1 << lut->total_n_c) * lut->y_dim;
+        lut->S[i] = (float*)calloc(table_size, sizeof(float));
+        fread(lut->S[i], sizeof(float), table_size, f);
+    }
+}
+
+void save_Model(Model* m, const char* filename) {
+    FILE* f = fopen(filename, "wb");
+    if (!f) { printf("Error: cannot open %s for writing\n", filename); return; }
+
+    // Magic + version for sanity check
+    int magic = 0x534E4E54; // "SNNT"
+    fwrite(&magic, sizeof(int), 1, f);
+
+    // Token embedder
+    fwrite(m->Token_embedder, sizeof(float), VOCAB_SIZE * EMBEDDING_DIM, f);
+
+    // Layers
+    for (int l = 0; l < NUM_LAYERS; l++) {
+        save_LUT(&m->FFN[l], f);
+        for (int h = 0; h < NUM_HEADS; h++) {
+            save_LUT(&m->head[l][h].V, f);
+            fwrite(m->head[l][h].Positional_encoding, sizeof(float), CONTEXT_SIZE * N_T * POSITIONAL_DIM, f);
+        }
+    }
+
+    // Unembedder
+    save_LUT(&m->unembedder, f);
+
+    fclose(f);
+    printf("[Checkpoint saved to %s]\n", filename);
+}
+
+int load_Model(Model* m, const char* filename) {
+    FILE* f = fopen(filename, "rb");
+    if (!f) { printf("Error: cannot open %s for reading\n", filename); return 0; }
+
+    int magic;
+    fread(&magic, sizeof(int), 1, f);
+    if (magic != 0x534E4E54) { printf("Error: %s is not a valid SNN checkpoint\n", filename); fclose(f); return 0; }
+
+    // Token embedder
+    fread(m->Token_embedder, sizeof(float), VOCAB_SIZE * EMBEDDING_DIM, f);
+
+    // Layers
+    for (int l = 0; l < NUM_LAYERS; l++) {
+        load_LUT(&m->FFN[l], f);
+        for (int h = 0; h < NUM_HEADS; h++) {
+            load_LUT(&m->head[l][h].V, f);
+            fread(m->head[l][h].Positional_encoding, sizeof(float), CONTEXT_SIZE * N_T * POSITIONAL_DIM, f);
+        }
+    }
+
+    // Unembedder
+    load_LUT(&m->unembedder, f);
+
+    fclose(f);
+    printf("[Model loaded from %s]\n", filename);
+    return 1;
 }
 
 void attention_forward(AttentionHead* head, float x[CONTEXT_SIZE][EMBEDDING_DIM], float y[CONTEXT_SIZE][EMBEDDING_DIM]) {
@@ -476,7 +569,9 @@ void load_training_data(TrainingData* training, char* fname) {
     for (int i = 0; i < TESTING_LENGTH; i++) {
         training->testing_input_data[i] = rand() % training->length;
         for (int j = -CONTEXT_SIZE; j <= CONTEXT_SIZE; j++) { // ensure that the testing input data is not too close to the training data
-            training->reserved_for_testing[MAX(0, training->testing_input_data[i]+j)] = 1;
+            int idx = training->testing_input_data[i]+j;
+            if (idx >= 0 && idx < training->length)
+                training->reserved_for_testing[idx] = 1;
         }
     }
     printf("Successfully loaded training data\n");
@@ -516,7 +611,8 @@ int model_inference(Model* m) {
 void model_prompt_response(Model* m, unsigned char* prompt, int response_length) {
 
     unsigned char prompt_copy[CONTEXT_SIZE+1];
-    strlcpy((char *)prompt_copy, (const char *)prompt, CONTEXT_SIZE+1); // Need to fix: what if the prompt is too short?
+    strncpy((char *)prompt_copy, (const char *)prompt, CONTEXT_SIZE);
+    prompt_copy[CONTEXT_SIZE] = '\0'; // Need to fix: what if the prompt is too short?
     printf("%s", prompt_copy);
 
     for (int i = 0; i < response_length; i++) {
@@ -534,23 +630,62 @@ void model_prompt_response(Model* m, unsigned char* prompt, int response_length)
     }
 }
 
-
-
-
-// =================================================================================
-// Main function
-// =================================================================================   
 int main(int argc, char *argv[]) {
 
+    srand(time(NULL));
+
+    // INFERENCE MODE ./main model.bin "prompt" [length]
+    if (argc >= 3 && argv[1][0] != '-') {
+        const char* model_file = argv[1];
+        const char* prompt = argv[2];
+        int response_length = 80;
+        if (argc >= 4) response_length = atoi(argv[3]);
+
+        Model m;
+        if (!load_Model(&m, model_file)) return 1;
+
+        // Pad or truncate prompt to CONTEXT_SIZE
+        unsigned char prompt_buf[CONTEXT_SIZE + 1];
+        memset(prompt_buf, ' ', CONTEXT_SIZE);
+        prompt_buf[CONTEXT_SIZE] = '\0';
+        int plen = strlen(prompt);
+        if (plen >= CONTEXT_SIZE) {
+            memcpy(prompt_buf, prompt + plen - CONTEXT_SIZE, CONTEXT_SIZE);
+        } else {
+            memcpy(prompt_buf + CONTEXT_SIZE - plen, prompt, plen);
+        }
+
+        model_prompt_response(&m, prompt_buf, response_length);
+        printf("\n");
+
+        free_Model(&m);
+        return 0;
+    }
+
+    // TRAINING MODE
     TrainingData training;
-    load_training_data(&training, "train_v2_drcat_02.csv");
+    load_training_data(&training, "shakespeare.txt");
 
     FILE *file_loss = fopen(FILE_NAME, "w"); fclose(file_loss);
 
     Model m;
-    build_Model(&m);
+    int start_t = 0;
+
+    // parse --resume flag
+    if (argc >= 3 && strcmp(argv[1], "--resume") == 0) {
+        if (!load_Model(&m, argv[2])) return 1;
+        // parse step number from filename "model_10000.bin"
+        const char* base = strrchr(argv[2], '/');
+        base = base ? base + 1 : argv[2];
+        if (sscanf(base, "model_%d.bin", &start_t) != 1) {
+            start_t = 0;
+        }
+        printf("Resuming training from step %d\n", start_t);
+    } else {
+        build_Model(&m);
+    }
     
-    for (int t = 0; t < 100000000; t++) {
+    for (int t = start_t; t < 100000000; t++) {
 
         load_snippet(&m, &training, get_random_training_index(&training));
         learning_rate = LEARNING_RATE; // Adam scheduler
@@ -574,8 +709,15 @@ int main(int argc, char *argv[]) {
             fclose(file_loss);
     
             printf("\rt=%d,000, loss=%5.3f: ", t/1000, validation_loss);
-            model_prompt_response(&m, (unsigned char*)"insert your validation prompt here ", 80);
+
+            // MODEL PROMPT
+            model_prompt_response(&m, (unsigned char*)"O Romeo, please do go", 80);
             printf("\n"); 
+
+            // SAVE CHECKPOINT
+            char ckpt_name[64];
+            snprintf(ckpt_name, sizeof(ckpt_name), "model_%d.bin", t);
+            save_Model(&m, ckpt_name);
         }
         printf("\rt=%d", t); fflush(stdout);
     }

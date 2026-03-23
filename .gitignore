@@ -1,0 +1,5 @@
+# training models, data, loss
+*.bin
+*.txt
+*.csv
+*.exe
