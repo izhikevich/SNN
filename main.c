@@ -630,6 +630,9 @@ void model_prompt_response(Model* m, unsigned char* prompt, int response_length)
     }
 }
 
+// =================================================================================
+// Main function
+// =================================================================================  
 int main(int argc, char *argv[]) {
 
     srand(time(NULL));
@@ -711,7 +714,7 @@ int main(int argc, char *argv[]) {
             printf("\rt=%d,000, loss=%5.3f: ", t/1000, validation_loss);
 
             // MODEL PROMPT
-            model_prompt_response(&m, (unsigned char*)"O Romeo, please do go", 80);
+            model_prompt_response(&m, (unsigned char*)"insert your validation prompt here ", 80);
             printf("\n"); 
 
             // SAVE CHECKPOINT

@@ -35,5 +35,5 @@ Resume training from a checkpoint:
 
 Inference prompt generation:
 ```ps1
-./main model_50000.bin "Go forth my prince" 200    # custom length
+./main model_50000.bin "additional validation prompt here" 200    # custom length
 ```
