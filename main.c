@@ -32,7 +32,7 @@
 #define U(x) ( 0.5/(1+fabs(x)) )        // not used; here for reference
 #define Up(x) (-0.5*sign(x)/(1+fabs(x))/(1+fabs(x))) 
 
-#define LEARNING_RATE  (MIN( 1 /sqrt(1+t), t/(4000)/sqrt(4000) )) // Adam learning rate scheduler
+#define LEARNING_RATE  (MIN( 1 /sqrt(1+t), t/(4000.0f)/sqrt(4000) )) // Adam learning rate scheduler
 float learning_rate;
 #define TESTING_LENGTH 10000
 
